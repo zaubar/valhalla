@@ -2129,9 +2129,24 @@ struct graph_parser {
       // and save our CPUs the wasted time of iterating over them again for nothing
       auto hasTag = !tag.second.empty();
       if (tag.first == "highway") {
-        n.set_traffic_signal(tag.second == "traffic_signals");
+        n.set_traffic_signal(n.traffic_signal() || tag.second == "traffic_signals");
         n.set_stop_sign(tag.second == "stop");
         n.set_yield_sign(tag.second == "give_way");
+      } else if (tag.first == "crossing") {
+        // Signal-controlled pedestrian crossings are commonly tagged
+        // highway=crossing + crossing=traffic_signals without a separate
+        // highway=traffic_signals on the shared node; treat them as
+        // signal-controlled so pedestrian costing can prefer them.
+        if (tag.second == "traffic_signals" || tag.second == "traffic_lights" ||
+            tag.second == "pelican" || tag.second == "toucan") {
+          n.set_traffic_signal(true);
+        }
+      } else if (tag.first == "crossing:signals") {
+        // Newer crossing schema (StreetComplete / iD): crossing=marked plus
+        // crossing:signals=yes marks a signal-controlled crossing.
+        if (tag.second == "yes") {
+          n.set_traffic_signal(true);
+        }
       } else if (tag.first == "forward_signal") {
         n.set_forward_signal(tag.second == "true");
       } else if (tag.first == "backward_signal") {
