@@ -84,6 +84,20 @@ constexpr float kMaxPedestrianSpeed = 25.0f;
 // 2 cycleways or walkways cross
 constexpr uint32_t kCrossingCosts[] = {0, 0, 1, 1, 2, 3, 5, 15};
 
+// Fixed costs (seconds of weight, no elapsed time) added when a pedestrian
+// crossing edge traverses the node where it meets a roadway it crosses.
+// A signal-controlled crossing gets a small cost (parity with our OTP
+// fork's 5s) while an uncontrolled one (zebra, traffic island, unmarked)
+// costs materially more, so routes prefer a nearby signalized crossing when
+// the detour is small. Calibrated for route CHOICE at the default walking
+// speed (5.1 km/h, ~1.42 m/s): a dual-carriageway island crossing fires
+// twice -> net 2*(40-5)=70s, i.e. up to ~100 m of detour tolerated to reach
+// signals; a single carriageway tolerates ~50 m. Larger values would exceed
+// twice the stairs penalty (30s) per node and push routes toward unmapped,
+// penalty-free crossing points.
+constexpr float kSignalizedCrossingCost = 5.0f;    // Seconds of weight
+constexpr float kUnsignalizedCrossingCost = 40.0f; // Seconds of weight
+
 const std::string kDefaultPedestrianType = "foot";
 
 // User propensity to use "hilly" roads. Ranges from a value of 0 (avoid
@@ -812,6 +826,17 @@ Cost PedestrianCost::TransitionCost(const baldr::DirectedEdge* edge,
     c.secs += seconds;
     c.cost += shortest_ ? 0.f : seconds;
   }
+
+  // Prefer signal-controlled street crossings over uncontrolled ones (zebra,
+  // traffic island, unmarked). The node where a pedestrian crossing edge
+  // meets the roadway it crosses has Use::kPedestrianCrossing edges on both
+  // sides; a traffic signal at that node marks the crossing as controlled.
+  // Weight only (no elapsed time) so ETAs are unaffected.
+  if (edge->use() == Use::kPedestrianCrossing && pred.use() == Use::kPedestrianCrossing) {
+    c.cost += shortest_ ? 0.f
+                        : (node->traffic_signal() ? kSignalizedCrossingCost
+                                                  : kUnsignalizedCrossingCost);
+  }
   return c;
 }
 
@@ -866,6 +891,15 @@ Cost PedestrianCost::TransitionCostReverse(const uint32_t idx,
     float seconds = kCrossingCosts[edge->stopimpact(idx)];
     c.secs += seconds;
     c.cost += shortest_ ? 0.f : seconds;
+  }
+
+  // Prefer signal-controlled street crossings over uncontrolled ones.
+  // Mirrors the forward TransitionCost above; node and edge uses are
+  // direction-neutral so forward and reverse costs stay identical.
+  if (edge->use() == Use::kPedestrianCrossing && pred->use() == Use::kPedestrianCrossing) {
+    c.cost += shortest_ ? 0.f
+                        : (node->traffic_signal() ? kSignalizedCrossingCost
+                                                  : kUnsignalizedCrossingCost);
   }
   return c;
 }
