@@ -1498,11 +1498,13 @@ struct graph_parser {
       } else if (value.find("tartan") != std::string::npos ||
                  value.find("pavingstone") != std::string::npos ||
                  value.find("paving_stones") != std::string::npos ||
-                 value.find("sett") != std::string::npos ||
                  value.find("grass_paver") != std::string::npos) {
         way_.set_surface(Surface::kPaved);
 
       } else if (value.find("cobblestone") != std::string::npos ||
+                 // sett (dressed cobblestone) is what the Regensburg Altstadt is paved with;
+                 // for wheelchair users it is as rough as cobblestone, not like paving stones
+                 value.find("sett") != std::string::npos ||
                  value.find("brick") != std::string::npos) {
         way_.set_surface(Surface::kPavedRough);
 
