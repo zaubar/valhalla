@@ -62,6 +62,13 @@ constexpr float kDefaultAlleyFactor = 2.0f;        // Avoid alleys
 constexpr float kDefaultDrivewayFactor = 5.0f;     // Avoid driveways
 constexpr float kDefaultUseFerry = 1.0f;
 constexpr float kDefaultUseLivingStreets = 0.6f; // Factor between 0 and 1
+// Rough surfaces (paved_rough and worse: cobblestone, sett, compacted, gravel, dirt, path).
+// avoid_bad_surfaces is a preference between 0 (no effect, the default) and 1; at 1 an
+// edge on a rough surface costs kRoughSurfaceStrength + 1 times its length in time,
+// which mirrors OpenTripPlanner's inaccessible-street reluctance of 25 for wheelchair
+// users. A soft factor: the edge stays usable when nothing else connects.
+constexpr float kDefaultAvoidBadSurfaces = 0.0f;
+constexpr float kRoughSurfaceStrength = 24.0f;
 
 // Maximum distance at the beginning or end of a multimodal route
 // that you are willing to travel for this mode.  In this case,
@@ -145,6 +152,7 @@ constexpr ranged_default_t<float> kWalkwayFactorRange{kMinFactor, kDefaultWalkwa
 constexpr ranged_default_t<float> kSideWalkFactorRange{kMinFactor, kDefaultSideWalkFactor,
                                                        kMaxFactor};
 constexpr ranged_default_t<float> kAlleyFactorRange{kMinFactor, kDefaultAlleyFactor, kMaxFactor};
+constexpr ranged_default_t<float> kAvoidBadSurfacesRange{0.0f, kDefaultAvoidBadSurfaces, 1.0f};
 constexpr ranged_default_t<float> kDrivewayFactorRange{kMinFactor, kDefaultDrivewayFactor,
                                                        kMaxFactor};
 constexpr ranged_default_t<uint32_t>
@@ -554,6 +562,7 @@ public:
   float sidewalk_factor_;          // Factor for favoring sidewalks.
   float alley_factor_;             // Avoid alleys factor.
   float driveway_factor_;          // Avoid driveways factor.
+  float avoid_bad_surfaces_;       // Rough-surface avoidance preference (0 = off, 1 = max).
   float step_penalty_;             // Penalty applied to steps/stairs (seconds).
   float elevator_penalty_;         // Penalty applied to elevator (seconds).
 
@@ -666,6 +675,7 @@ PedestrianCost::PedestrianCost(const Costing& costing)
   sidewalk_factor_ = costing_options.sidewalk_factor();
   alley_factor_ = costing_options.alley_factor();
   driveway_factor_ = costing_options.driveway_factor();
+  avoid_bad_surfaces_ = costing_options.avoid_bad_surfaces();
   transit_start_end_max_distance_ = costing_options.transit_start_end_max_distance();
   transit_transfer_max_distance_ = costing_options.transit_transfer_max_distance();
 
@@ -793,6 +803,12 @@ Cost PedestrianCost::EdgeCost(const baldr::DirectedEdge* edge,
 
   factor *= edge->lit() + (!edge->lit() * unlit_factor_);
   factor *= EdgeFactor(edgeid);
+
+  // Rough surfaces (cobblestone, sett, gravel, ...) cost more for users who asked to avoid
+  // them. Multiplicative and >= 1, so the A* heuristic stays admissible.
+  if (avoid_bad_surfaces_ > 0.0f && edge->surface() >= Surface::kPavedRough) {
+    factor *= 1.0f + avoid_bad_surfaces_ * kRoughSurfaceStrength;
+  }
 
   // Slightly favor walkways/paths and penalize alleys and driveways.
   return {sec * factor, sec};
@@ -960,6 +976,8 @@ void ParsePedestrianCostOptions(const rapidjson::Document& doc,
   JSON_PBF_RANGED_DEFAULT(co, kAlleyFactorRange, json, "/alley_factor", alley_factor, warnings);
   JSON_PBF_RANGED_DEFAULT(co, kDrivewayFactorRange, json, "/driveway_factor", driveway_factor,
                           warnings);
+  JSON_PBF_RANGED_DEFAULT(co, kAvoidBadSurfacesRange, json, "/avoid_bad_surfaces",
+                          avoid_bad_surfaces, warnings);
   JSON_PBF_RANGED_DEFAULT(co, kMultimodalStartEndMaxDistanceRange, json,
                           "/transit_start_end_max_distance", transit_start_end_max_distance,
                           warnings);
