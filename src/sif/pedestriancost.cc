@@ -118,17 +118,19 @@ constexpr bool IsPedestrianUse(const Use use) {
          use == Use::kPedestrian || use == Use::kPedestrianCrossing;
 }
 
-// The signalized-crossing preference is for walkers who cross a roadway. Where only
+// The signalized-crossing preference is for walkers who cross a street. Where only
 // pedestrian ways meet (a footway junction, a square's perimeter with its generated
-// crossings) there is no roadway to cross, and charging kUnsignalizedCrossingCost at
-// every such node made routes hug a square's outline notch by notch rather than leave
-// it for a straight crossing. A roadway is any edge at the node with vehicular access
-// that is not a driveway or a parking aisle.
-inline bool CrossesRoadway(const baldr::NodeInfo* node, const graph_tile_ptr& tile) {
+// crossings, a pedestrian-zone street with delivery access) there is no street to
+// cross, and charging kUnsignalizedCrossingCost at every such node made routes hug a
+// square's outline notch by notch rather than leave it for a straight crossing. A
+// street is a plain road (Use::kRoad) of residential class or better with vehicular
+// access; living streets, service roads, driveways and pedestrian streets with
+// destination-only vehicle access do not count.
+inline bool CrossesStreet(const baldr::NodeInfo* node, const graph_tile_ptr& tile) {
   const baldr::DirectedEdge* de = tile->directededge(node->edge_index());
   for (uint32_t i = 0; i < node->edge_count(); ++i, ++de) {
-    if (((de->forwardaccess() | de->reverseaccess()) & kVehicularAccess) &&
-        de->use() != Use::kDriveway && de->use() != Use::kParkingAisle) {
+    if (de->use() == Use::kRoad && de->classification() <= RoadClass::kResidential &&
+        ((de->forwardaccess() | de->reverseaccess()) & kVehicularAccess)) {
       return true;
     }
   }
@@ -878,7 +880,7 @@ Cost PedestrianCost::TransitionCost(const baldr::DirectedEdge* edge,
     // node-only crossings alike. Weight only (no elapsed time) so ETAs are
     // unaffected.
     if (IsPedestrianUse(edge->use()) && IsPedestrianUse(pred.use()) &&
-        CrossesRoadway(node, tile)) {
+        CrossesStreet(node, tile)) {
       c.cost += shortest_ ? 0.f
                           : (node->traffic_signal() ? kSignalizedCrossingCost
                                                     : kUnsignalizedCrossingCost);
@@ -943,7 +945,7 @@ Cost PedestrianCost::TransitionCostReverse(const uint32_t idx,
     // Mirrors the forward TransitionCost above; node and edge uses are
     // direction-neutral so forward and reverse costs stay identical.
     if (IsPedestrianUse(edge->use()) && IsPedestrianUse(pred->use()) &&
-        CrossesRoadway(node, tile)) {
+        CrossesStreet(node, tile)) {
       c.cost += shortest_ ? 0.f
                           : (node->traffic_signal() ? kSignalizedCrossingCost
                                                     : kUnsignalizedCrossingCost);
