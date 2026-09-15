@@ -129,7 +129,7 @@ constexpr bool IsPedestrianUse(const Use use) {
 inline bool CrossesStreet(const baldr::NodeInfo* node, const graph_tile_ptr& tile) {
   const baldr::DirectedEdge* de = tile->directededge(node->edge_index());
   for (uint32_t i = 0; i < node->edge_count(); ++i, ++de) {
-    if (de->use() == Use::kRoad && de->classification() <= RoadClass::kResidential &&
+    if (de->use() == Use::kRoad && de->classification() <= baldr::RoadClass::kResidential &&
         ((de->forwardaccess() | de->reverseaccess()) & kVehicularAccess)) {
       return true;
     }
