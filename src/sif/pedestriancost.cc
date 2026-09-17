@@ -69,6 +69,11 @@ constexpr float kDefaultUseLivingStreets = 0.6f; // Factor between 0 and 1
 // users. A soft factor: the edge stays usable when nothing else connects.
 constexpr float kDefaultAvoidBadSurfaces = 0.0f;
 constexpr float kRoughSurfaceStrength = 24.0f;
+// avoid_very_rough_surfaces is the same preference for the tier below paved_rough: compacted and
+// worse, which is where the graph parser files dressed cobblestone in bad repair (sett with
+// smoothness bad or worse), gravel and dirt. When a request does not send it, it follows
+// avoid_bad_surfaces, so a caller that knows only the one option keeps the flat behaviour.
+constexpr float kDefaultAvoidVeryRoughSurfaces = 0.0f;
 
 // Maximum distance at the beginning or end of a multimodal route
 // that you are willing to travel for this mode.  In this case,
@@ -172,6 +177,8 @@ constexpr ranged_default_t<float> kSideWalkFactorRange{kMinFactor, kDefaultSideW
                                                        kMaxFactor};
 constexpr ranged_default_t<float> kAlleyFactorRange{kMinFactor, kDefaultAlleyFactor, kMaxFactor};
 constexpr ranged_default_t<float> kAvoidBadSurfacesRange{0.0f, kDefaultAvoidBadSurfaces, 1.0f};
+constexpr ranged_default_t<float> kAvoidVeryRoughSurfacesRange{0.0f, kDefaultAvoidVeryRoughSurfaces,
+                                                                1.0f};
 constexpr ranged_default_t<float> kDrivewayFactorRange{kMinFactor, kDefaultDrivewayFactor,
                                                        kMaxFactor};
 constexpr ranged_default_t<uint32_t>
@@ -582,6 +589,7 @@ public:
   float alley_factor_;             // Avoid alleys factor.
   float driveway_factor_;          // Avoid driveways factor.
   float avoid_bad_surfaces_;       // Rough-surface avoidance preference (0 = off, 1 = max).
+  float avoid_very_rough_surfaces_; // The same for compacted and worse (0 = off, 1 = max).
   float step_penalty_;             // Penalty applied to steps/stairs (seconds).
   float elevator_penalty_;         // Penalty applied to elevator (seconds).
 
@@ -695,6 +703,7 @@ PedestrianCost::PedestrianCost(const Costing& costing)
   alley_factor_ = costing_options.alley_factor();
   driveway_factor_ = costing_options.driveway_factor();
   avoid_bad_surfaces_ = costing_options.avoid_bad_surfaces();
+  avoid_very_rough_surfaces_ = costing_options.avoid_very_rough_surfaces();
   transit_start_end_max_distance_ = costing_options.transit_start_end_max_distance();
   transit_transfer_max_distance_ = costing_options.transit_transfer_max_distance();
 
@@ -823,9 +832,15 @@ Cost PedestrianCost::EdgeCost(const baldr::DirectedEdge* edge,
   factor *= edge->lit() + (!edge->lit() * unlit_factor_);
   factor *= EdgeFactor(edgeid);
 
-  // Rough surfaces (cobblestone, sett, gravel, ...) cost more for users who asked to avoid
-  // them. Multiplicative and >= 1, so the A* heuristic stays admissible.
-  if (avoid_bad_surfaces_ > 0.0f && edge->surface() >= Surface::kPavedRough) {
+  // Rough surfaces cost more for users who asked to avoid them, in two tiers: paved_rough
+  // (sound sett, cobblestone) follows avoid_bad_surfaces, compacted and worse (bumpy sett,
+  // gravel, dirt) follows avoid_very_rough_surfaces. Multiplicative and >= 1, so the A*
+  // heuristic stays admissible.
+  if (edge->surface() >= Surface::kCompacted) {
+    if (avoid_very_rough_surfaces_ > 0.0f) {
+      factor *= 1.0f + avoid_very_rough_surfaces_ * kRoughSurfaceStrength;
+    }
+  } else if (edge->surface() == Surface::kPavedRough && avoid_bad_surfaces_ > 0.0f) {
     factor *= 1.0f + avoid_bad_surfaces_ * kRoughSurfaceStrength;
   }
 
@@ -999,6 +1014,22 @@ void ParsePedestrianCostOptions(const rapidjson::Document& doc,
                           warnings);
   JSON_PBF_RANGED_DEFAULT(co, kAvoidBadSurfacesRange, json, "/avoid_bad_surfaces",
                           avoid_bad_surfaces, warnings);
+  // The tier below follows the tier above unless the request grades the two itself.
+  {
+    bool clamped = false;
+    co->set_avoid_very_rough_surfaces(kAvoidVeryRoughSurfacesRange(
+        rapidjson::get<float>(json, "/avoid_very_rough_surfaces",
+                              co->has_avoid_very_rough_surfaces_case()
+                                  ? co->avoid_very_rough_surfaces()
+                                  : co->avoid_bad_surfaces()),
+        clamped));
+    if (clamped) {
+      auto warning = warnings.Add();
+      warning->set_description("'/avoid_very_rough_surfaces' has been clamped to " +
+                               std::to_string(kAvoidVeryRoughSurfacesRange.def));
+      warning->set_code(500);
+    }
+  }
   JSON_PBF_RANGED_DEFAULT(co, kMultimodalStartEndMaxDistanceRange, json,
                           "/transit_start_end_max_distance", transit_start_end_max_distance,
                           warnings);

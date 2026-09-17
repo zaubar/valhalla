@@ -1249,6 +1249,21 @@ void test_avoid_bad_surfaces_parsing(const Costing::Type costing_type,
   validate(key, expected_value, options.avoid_bad_surfaces());
 }
 
+void test_avoid_very_rough_surfaces_parsing(const Costing::Type costing_type,
+                                            const float specified_value,
+                                            const float expected_value,
+                                            const Options::Action action = Options::route) {
+  auto costing_str = get_costing_str(costing_type);
+  const std::string grandparent_key = "costing_options";
+  const std::string& parent_key = costing_str;
+  const std::string key = "avoid_very_rough_surfaces";
+
+  Api request =
+      get_request(get_request_str(grandparent_key, parent_key, key, specified_value), action);
+  const auto& options = request.options().costings().find(costing_type)->second.options();
+  validate(key, expected_value, options.avoid_very_rough_surfaces());
+}
+
 void test_transit_start_end_max_distance_parsing(const Costing::Type costing_type,
                                                  const uint32_t specified_value,
                                                  const uint32_t expected_value,
@@ -2640,6 +2655,32 @@ TEST(ParseRequest, test_avoid_bad_surfaces) {
   test_avoid_bad_surfaces_parsing(costing, 0.5f, 0.5f);
   test_avoid_bad_surfaces_parsing(costing, -2.f, default_value);
   test_avoid_bad_surfaces_parsing(costing, 2.f, default_value);
+}
+
+TEST(ParseRequest, test_pedestrian_avoid_bad_surfaces) {
+  Costing::Type costing = Costing::pedestrian;
+  test_avoid_bad_surfaces_parsing(costing, 0.f, 0.f);
+  test_avoid_bad_surfaces_parsing(costing, 0.4f, 0.4f);
+  test_avoid_bad_surfaces_parsing(costing, 2.f, 0.f);
+}
+
+TEST(ParseRequest, test_pedestrian_avoid_very_rough_surfaces) {
+  Costing::Type costing = Costing::pedestrian;
+  test_avoid_very_rough_surfaces_parsing(costing, 0.6f, 0.6f);
+  test_avoid_very_rough_surfaces_parsing(costing, 2.f, 0.f);
+
+  // absent, the tier below follows avoid_bad_surfaces: the flat behaviour of before
+  Api request = get_request(R"({"costing":"pedestrian","costing_options":{"pedestrian":{"avoid_bad_surfaces":0.4}}})",
+                            Options::route);
+  const auto& options = request.options().costings().find(costing)->second.options();
+  validate("avoid_very_rough_surfaces", 0.4f, options.avoid_very_rough_surfaces());
+
+  // sent, it stands on its own
+  request = get_request(R"({"costing":"pedestrian","costing_options":{"pedestrian":{"avoid_bad_surfaces":0.4,"avoid_very_rough_surfaces":1.0}}})",
+                        Options::route);
+  const auto& graded = request.options().costings().find(costing)->second.options();
+  validate("avoid_bad_surfaces", 0.4f, graded.avoid_bad_surfaces());
+  validate("avoid_very_rough_surfaces", 1.0f, graded.avoid_very_rough_surfaces());
 }
 
 TEST(ParseRequest, test_cycling_speed) {

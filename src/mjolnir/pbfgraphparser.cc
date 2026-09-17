@@ -1536,6 +1536,9 @@ struct graph_parser {
 
     // surface and tracktype tag should win over smoothness.
     tag_handlers_["smoothness"] = [this]() {
+      rough_smoothness_ = tag_.second == "bad" || tag_.second == "very_bad" ||
+                          tag_.second == "horrible" || tag_.second == "very_horrible" ||
+                          tag_.second == "impassable";
       if (!has_surface_tag_ && !has_tracktype_tag_) {
         has_surface_ = true;
         if (tag_.second == "excellent" || tag_.second == "good") {
@@ -2595,6 +2598,7 @@ struct graph_parser {
 
     const auto& tracktype_exists = tags.find("tracktype");
     has_tracktype_tag_ = (tracktype_exists != tags.end());
+    rough_smoothness_ = false;
 
     way_.set_drive_on_right(true); // default
 
@@ -3085,6 +3089,14 @@ struct graph_parser {
             break;
         }
       }
+    }
+
+    // Dressed cobblestone in bad repair (sett with smoothness bad or worse, which is how the
+    // Regensburg paving survey grades its bumpy squares) is as rough for a wheelchair as an
+    // unpaved track: one class below paved_rough, so the pedestrian costing can charge it as
+    // its own tier (avoid_very_rough_surfaces).
+    if (rough_smoothness_ && way_.surface() == Surface::kPavedRough) {
+      way_.set_surface(Surface::kCompacted);
     }
 
     // set the speed
@@ -4974,6 +4986,7 @@ struct graph_parser {
   bool has_average_speed_ = false, has_advisory_speed_ = false;
   bool has_surface_ = true;
   bool has_surface_tag_ = true, has_tracktype_tag_ = true;
+  bool rough_smoothness_ = false;
   OSMAccess osm_access_;
   std::map<std::pair<uint8_t, uint8_t>, uint32_t> pronunciationMap;
   std::map<std::pair<uint8_t, uint8_t>, uint32_t> langMap;
