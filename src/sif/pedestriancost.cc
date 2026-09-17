@@ -62,6 +62,18 @@ constexpr float kDefaultAlleyFactor = 2.0f;        // Avoid alleys
 constexpr float kDefaultDrivewayFactor = 5.0f;     // Avoid driveways
 constexpr float kDefaultUseFerry = 1.0f;
 constexpr float kDefaultUseLivingStreets = 0.6f; // Factor between 0 and 1
+// Rough surfaces (paved_rough and worse: cobblestone, sett, compacted, gravel, dirt, path).
+// avoid_bad_surfaces is a preference between 0 (no effect, the default) and 1; at 1 an
+// edge on a rough surface costs kRoughSurfaceStrength + 1 times its length in time,
+// which mirrors OpenTripPlanner's inaccessible-street reluctance of 25 for wheelchair
+// users. A soft factor: the edge stays usable when nothing else connects.
+constexpr float kDefaultAvoidBadSurfaces = 0.0f;
+constexpr float kRoughSurfaceStrength = 24.0f;
+// avoid_very_rough_surfaces is the same preference for the tier below paved_rough: compacted and
+// worse, which is where the graph parser files dressed cobblestone in bad repair (sett with
+// smoothness bad or worse), gravel and dirt. When a request does not send it, it follows
+// avoid_bad_surfaces, so a caller that knows only the one option keeps the flat behaviour.
+constexpr float kDefaultAvoidVeryRoughSurfaces = 0.0f;
 
 // Maximum distance at the beginning or end of a multimodal route
 // that you are willing to travel for this mode.  In this case,
@@ -111,6 +123,25 @@ constexpr bool IsPedestrianUse(const Use use) {
          use == Use::kPedestrian || use == Use::kPedestrianCrossing;
 }
 
+// The signalized-crossing preference is for walkers who cross a street. Where only
+// pedestrian ways meet (a footway junction, a square's perimeter with its generated
+// crossings, a pedestrian-zone street with delivery access) there is no street to
+// cross, and charging kUnsignalizedCrossingCost at every such node made routes hug a
+// square's outline notch by notch rather than leave it for a straight crossing. A
+// street is a plain road (Use::kRoad) of residential class or better with vehicular
+// access; living streets, service roads, driveways and pedestrian streets with
+// destination-only vehicle access do not count.
+inline bool CrossesStreet(const baldr::NodeInfo* node, const graph_tile_ptr& tile) {
+  const baldr::DirectedEdge* de = tile->directededge(node->edge_index());
+  for (uint32_t i = 0; i < node->edge_count(); ++i, ++de) {
+    if (de->use() == Use::kRoad && de->classification() <= baldr::RoadClass::kResidential &&
+        ((de->forwardaccess() | de->reverseaccess()) & kVehicularAccess)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const std::string kDefaultPedestrianType = "foot";
 
 // User propensity to use "hilly" roads. Ranges from a value of 0 (avoid
@@ -145,6 +176,9 @@ constexpr ranged_default_t<float> kWalkwayFactorRange{kMinFactor, kDefaultWalkwa
 constexpr ranged_default_t<float> kSideWalkFactorRange{kMinFactor, kDefaultSideWalkFactor,
                                                        kMaxFactor};
 constexpr ranged_default_t<float> kAlleyFactorRange{kMinFactor, kDefaultAlleyFactor, kMaxFactor};
+constexpr ranged_default_t<float> kAvoidBadSurfacesRange{0.0f, kDefaultAvoidBadSurfaces, 1.0f};
+constexpr ranged_default_t<float> kAvoidVeryRoughSurfacesRange{0.0f, kDefaultAvoidVeryRoughSurfaces,
+                                                                1.0f};
 constexpr ranged_default_t<float> kDrivewayFactorRange{kMinFactor, kDefaultDrivewayFactor,
                                                        kMaxFactor};
 constexpr ranged_default_t<uint32_t>
@@ -554,6 +588,8 @@ public:
   float sidewalk_factor_;          // Factor for favoring sidewalks.
   float alley_factor_;             // Avoid alleys factor.
   float driveway_factor_;          // Avoid driveways factor.
+  float avoid_bad_surfaces_;       // Rough-surface avoidance preference (0 = off, 1 = max).
+  float avoid_very_rough_surfaces_; // The same for compacted and worse (0 = off, 1 = max).
   float step_penalty_;             // Penalty applied to steps/stairs (seconds).
   float elevator_penalty_;         // Penalty applied to elevator (seconds).
 
@@ -666,6 +702,8 @@ PedestrianCost::PedestrianCost(const Costing& costing)
   sidewalk_factor_ = costing_options.sidewalk_factor();
   alley_factor_ = costing_options.alley_factor();
   driveway_factor_ = costing_options.driveway_factor();
+  avoid_bad_surfaces_ = costing_options.avoid_bad_surfaces();
+  avoid_very_rough_surfaces_ = costing_options.avoid_very_rough_surfaces();
   transit_start_end_max_distance_ = costing_options.transit_start_end_max_distance();
   transit_transfer_max_distance_ = costing_options.transit_transfer_max_distance();
 
@@ -794,6 +832,18 @@ Cost PedestrianCost::EdgeCost(const baldr::DirectedEdge* edge,
   factor *= edge->lit() + (!edge->lit() * unlit_factor_);
   factor *= EdgeFactor(edgeid);
 
+  // Rough surfaces cost more for users who asked to avoid them, in two tiers: paved_rough
+  // (sound sett, cobblestone) follows avoid_bad_surfaces, compacted and worse (bumpy sett,
+  // gravel, dirt) follows avoid_very_rough_surfaces. Multiplicative and >= 1, so the A*
+  // heuristic stays admissible.
+  if (edge->surface() >= Surface::kCompacted) {
+    if (avoid_very_rough_surfaces_ > 0.0f) {
+      factor *= 1.0f + avoid_very_rough_surfaces_ * kRoughSurfaceStrength;
+    }
+  } else if (edge->surface() == Surface::kPavedRough && avoid_bad_surfaces_ > 0.0f) {
+    factor *= 1.0f + avoid_bad_surfaces_ * kRoughSurfaceStrength;
+  }
+
   // Slightly favor walkways/paths and penalize alleys and driveways.
   return {sec * factor, sec};
 }
@@ -844,7 +894,8 @@ Cost PedestrianCost::TransitionCost(const baldr::DirectedEdge* edge,
     // roadway on pedestrian infrastructure — mapped crossing ways and bare
     // node-only crossings alike. Weight only (no elapsed time) so ETAs are
     // unaffected.
-    if (IsPedestrianUse(edge->use()) && IsPedestrianUse(pred.use())) {
+    if (IsPedestrianUse(edge->use()) && IsPedestrianUse(pred.use()) &&
+        CrossesStreet(node, tile)) {
       c.cost += shortest_ ? 0.f
                           : (node->traffic_signal() ? kSignalizedCrossingCost
                                                     : kUnsignalizedCrossingCost);
@@ -908,7 +959,8 @@ Cost PedestrianCost::TransitionCostReverse(const uint32_t idx,
     // Prefer signal-controlled street crossings over uncontrolled ones.
     // Mirrors the forward TransitionCost above; node and edge uses are
     // direction-neutral so forward and reverse costs stay identical.
-    if (IsPedestrianUse(edge->use()) && IsPedestrianUse(pred->use())) {
+    if (IsPedestrianUse(edge->use()) && IsPedestrianUse(pred->use()) &&
+        CrossesStreet(node, tile)) {
       c.cost += shortest_ ? 0.f
                           : (node->traffic_signal() ? kSignalizedCrossingCost
                                                     : kUnsignalizedCrossingCost);
@@ -960,6 +1012,24 @@ void ParsePedestrianCostOptions(const rapidjson::Document& doc,
   JSON_PBF_RANGED_DEFAULT(co, kAlleyFactorRange, json, "/alley_factor", alley_factor, warnings);
   JSON_PBF_RANGED_DEFAULT(co, kDrivewayFactorRange, json, "/driveway_factor", driveway_factor,
                           warnings);
+  JSON_PBF_RANGED_DEFAULT(co, kAvoidBadSurfacesRange, json, "/avoid_bad_surfaces",
+                          avoid_bad_surfaces, warnings);
+  // The tier below follows the tier above unless the request grades the two itself.
+  {
+    bool clamped = false;
+    co->set_avoid_very_rough_surfaces(kAvoidVeryRoughSurfacesRange(
+        rapidjson::get<float>(json, "/avoid_very_rough_surfaces",
+                              co->has_avoid_very_rough_surfaces_case()
+                                  ? co->avoid_very_rough_surfaces()
+                                  : co->avoid_bad_surfaces()),
+        clamped));
+    if (clamped) {
+      auto warning = warnings.Add();
+      warning->set_description("'/avoid_very_rough_surfaces' has been clamped to " +
+                               std::to_string(kAvoidVeryRoughSurfacesRange.def));
+      warning->set_code(500);
+    }
+  }
   JSON_PBF_RANGED_DEFAULT(co, kMultimodalStartEndMaxDistanceRange, json,
                           "/transit_start_end_max_distance", transit_start_end_max_distance,
                           warnings);
